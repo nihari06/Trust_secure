@@ -1165,30 +1165,73 @@ def test_authorization_check_removal_causes_test_failure(client, db_session, mon
 
 def test_user_registration_creates_account_and_allows_login(client, db_session):
     """
-    Verify that new users can register through POST /api/v1/auth/register,
-    are stored with unique IDs in the database, can log in with their credentials,
-    and registration is audited.
+    Verify company account policy:
+    1. Public self-registration (POST /api/v1/auth/register) is rejected (HTTP 403).
+    2. Only authenticated Admin can create accounts through POST /api/v1/users.
+    3. Unauthenticated and non-admin requests are rejected (401/403).
+    4. Passwords are securely hashed and omitted from API responses.
+    5. Created users can successfully authenticate with valid credentials.
+    6. Account creation is recorded in the audit ledger.
     """
     reg_payload = {
+        "email": "publicuser@trustvault.dev",
+        "full_name": "Public User",
+        "password": "SecurePassword123!",
+        "role": "viewer",
+    }
+    # 1. Public self-registration is rejected with 403 in company mode
+    reg_resp = client.post("/api/v1/auth/register", json=reg_payload)
+    assert reg_resp.status_code == 403
+    assert "Public self-registration is disabled" in reg_resp.json()["detail"]
+
+    # Verify audit event for registration denial was logged
+    denied_evt = (
+        db_session.query(AuditEvent)
+        .filter(AuditEvent.action == "REGISTRATION_DENIED", AuditEvent.actor_email == "publicuser@trustvault.dev")
+        .first()
+    )
+    assert denied_evt is not None
+    assert denied_evt.outcome == AuditOutcome.denied
+
+    # 2. Unauthenticated request to POST /api/v1/users is rejected (401)
+    admin_create_payload = {
         "email": "newuser@trustvault.dev",
         "full_name": "New Registered User",
         "password": "SecurePassword123!",
         "role": "viewer",
     }
-    reg_resp = client.post("/api/v1/auth/register", json=reg_payload)
-    assert reg_resp.status_code == 201
-    user_data = reg_resp.json()
+    unauth_resp = client.post("/api/v1/users", json=admin_create_payload)
+    assert unauth_resp.status_code == 401
+
+    # 3. Non-admin (Viewer, Editor, Owner) cannot create accounts (403)
+    viewer = make_user(db_session, "viewer-prov@trustvault.dev", "Pass1234!", UserRole.viewer)
+    viewer_token = get_token(client, "viewer-prov@trustvault.dev", "Pass1234!")
+    viewer_resp = client.post("/api/v1/users", json=admin_create_payload, headers=auth_headers(viewer_token))
+    assert viewer_resp.status_code == 403
+
+    owner = make_user(db_session, "owner-prov@trustvault.dev", "Pass1234!", UserRole.owner)
+    owner_token = get_token(client, "owner-prov@trustvault.dev", "Pass1234!")
+    owner_resp = client.post("/api/v1/users", json=admin_create_payload, headers=auth_headers(owner_token))
+    assert owner_resp.status_code == 403
+
+    # 4. Authenticated Admin can create accounts
+    admin = make_user(db_session, "admin-prov@trustvault.dev", "Pass1234!", UserRole.admin)
+    admin_token = get_token(client, "admin-prov@trustvault.dev", "Pass1234!")
+    create_resp = client.post("/api/v1/users", json=admin_create_payload, headers=auth_headers(admin_token))
+    assert create_resp.status_code == 201
+    user_data = create_resp.json()
     assert user_data["email"] == "newuser@trustvault.dev"
     assert user_data["full_name"] == "New Registered User"
+    assert user_data["role"] == "viewer"
     assert "id" in user_data
     assert "password" not in user_data
     assert "hashed_password" not in user_data
 
-    # Duplicate registration is rejected
-    dup_resp = client.post("/api/v1/auth/register", json=reg_payload)
+    # Duplicate registration by Admin is rejected (409)
+    dup_resp = client.post("/api/v1/users", json=admin_create_payload, headers=auth_headers(admin_token))
     assert dup_resp.status_code == 409
 
-    # New user can immediately log in
+    # 5. New user can immediately log in with their credentials
     login_resp = client.post(
         "/api/v1/auth/login",
         data={"username": "newuser@trustvault.dev", "password": "SecurePassword123!"},
@@ -1197,14 +1240,15 @@ def test_user_registration_creates_account_and_allows_login(client, db_session):
     token = login_resp.json()["access_token"]
     assert token is not None
 
-    # Audit event is created
+    # 6. Audit event is created for Admin creation
     audit_evt = (
         db_session.query(AuditEvent)
-        .filter(AuditEvent.action == "USER_REGISTERED", AuditEvent.actor_email == "newuser@trustvault.dev")
+        .filter(AuditEvent.action == "USER_CREATED", AuditEvent.resource_name == "newuser@trustvault.dev")
         .first()
     )
     assert audit_evt is not None
     assert audit_evt.outcome == AuditOutcome.success
+    assert audit_evt.actor_email == "admin-prov@trustvault.dev"
 
 
 def test_user_lookup_search_and_pagination(client, db_session):
@@ -1401,35 +1445,67 @@ def test_independent_revocation_and_permission_level_update(client, db_session):
 
 
 def test_registration_rejects_privileged_role_self_assignment(client, db_session):
-    """Ensure public registration cannot self-assign Admin or Owner roles."""
-    # Attempt Admin role
-    resp_admin = client.post("/api/v1/auth/register", json={
+    """
+    Ensure:
+    1. In company mode, public registration is completely disabled (403).
+    2. If public registration were enabled in dev mode, self-assigning privileged roles (Admin, Owner) is strictly forbidden.
+    3. Non-admins cannot grant Admin or elevated roles through user management APIs.
+    """
+    # 1. Company mode: all public registration attempts are rejected with 403
+    resp_company_admin = client.post("/api/v1/auth/register", json={
         "email": "hacker-admin@test.com",
         "full_name": "Hacker Admin",
         "password": "Password123!",
         "role": "admin",
     })
-    assert resp_admin.status_code == 403
-    assert "Self-assigning privileged roles is forbidden" in resp_admin.json()["detail"]
+    assert resp_company_admin.status_code == 403
+    assert "Public self-registration is disabled" in resp_company_admin.json()["detail"]
 
-    # Attempt Owner role
-    resp_owner = client.post("/api/v1/auth/register", json={
-        "email": "hacker-owner@test.com",
-        "full_name": "Hacker Owner",
-        "password": "Password123!",
-        "role": "owner",
-    })
-    assert resp_owner.status_code == 403
+    # 2. Dev mode fallback: test role self-assignment guard when registration is enabled
+    try:
+        settings.ALLOW_PUBLIC_REGISTRATION = True
 
-    # Valid registration as standard Viewer
-    resp_viewer = client.post("/api/v1/auth/register", json={
-        "email": "honest-viewer@test.com",
-        "full_name": "Honest Viewer",
-        "password": "Password123!",
-        "role": "viewer",
-    })
-    assert resp_viewer.status_code == 201
-    assert resp_viewer.json()["role"] == "viewer"
+        # Attempt Admin role
+        resp_admin = client.post("/api/v1/auth/register", json={
+            "email": "hacker-admin@test.com",
+            "full_name": "Hacker Admin",
+            "password": "Password123!",
+            "role": "admin",
+        })
+        assert resp_admin.status_code == 403
+        assert "Self-assigning privileged roles is forbidden" in resp_admin.json()["detail"]
+
+        # Attempt Owner role
+        resp_owner = client.post("/api/v1/auth/register", json={
+            "email": "hacker-owner@test.com",
+            "full_name": "Hacker Owner",
+            "password": "Password123!",
+            "role": "owner",
+        })
+        assert resp_owner.status_code == 403
+
+        # Valid registration defaults to standard Viewer
+        resp_viewer = client.post("/api/v1/auth/register", json={
+            "email": "honest-viewer@test.com",
+            "full_name": "Honest Viewer",
+            "password": "Password123!",
+            "role": "viewer",
+        })
+        assert resp_viewer.status_code == 201
+        assert resp_viewer.json()["role"] == "viewer"
+    finally:
+        # Restore company mode policy
+        settings.ALLOW_PUBLIC_REGISTRATION = False
+
+    # 3. Non-admin cannot assign admin roles through API
+    viewer = make_user(db_session, "viewer-elevate@test.com", "Pass1234!", UserRole.viewer)
+    token = get_token(client, "viewer-elevate@test.com", "Pass1234!")
+    resp_elevate = client.patch(
+        f"/api/v1/users/{viewer.id}",
+        json={"role": "admin"},
+        headers=auth_headers(token),
+    )
+    assert resp_elevate.status_code == 403
 
 
 def test_admin_cannot_modify_own_role_or_deactivate_self(client, db_session):
@@ -1493,5 +1569,55 @@ def test_audit_chain_verification_returns_summary_and_failed_ids_on_tampering(cl
     assert tampered_data["valid"] is False
     assert tampered_id in tampered_data["failed_event_ids"]
     assert "discrepancy" in tampered_data["summary"].lower() or "failed" in tampered_data["summary"].lower()
+
+
+def test_existing_database_and_demo_accounts_preserved():
+    """
+    Requirement 15: Existing legitimate demo accounts, documents, and database records remain intact.
+    Verifies that the live SQLite database (backend/trustvault.db) is preserved without data loss,
+    has all original user accounts, all documents, and a 100% valid cryptographic audit hash chain.
+    """
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    db_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "trustvault.db")
+    assert os.path.exists(db_path), f"Live database file not found at {db_path}"
+
+    engine = create_engine(f"sqlite:///{db_path}")
+    SessionLocal = sessionmaker(bind=engine)
+    db = SessionLocal()
+
+    try:
+        # 1. Verify demo user accounts exist and are intact
+        users = {u.email: u for u in db.query(User).all()}
+        expected_emails = [
+            "admin@trustvault.dev",
+            "owner_a@trustvault.dev",
+            "owner_b@trustvault.dev",
+            "viewer@trustvault.dev",
+            "editor@trustvault.dev",
+        ]
+        for email in expected_emails:
+            assert email in users, f"Expected demo user {email} was missing!"
+            user = users[email]
+            assert user.is_active is True
+            assert user.hashed_password.startswith("$2b$") or len(user.hashed_password) > 20
+
+        # 2. Verify documents are intact (10 documents)
+        docs = db.query(Document).all()
+        assert len(docs) >= 10, f"Expected at least 10 documents, found {len(docs)}"
+
+        # 3. Verify audit chain integrity on the live database
+        events = db.query(AuditEvent).order_by(AuditEvent.sequence_num.asc()).all()
+        assert len(events) >= 196, f"Expected at least 196 audit events, found {len(events)}"
+
+        result = audit_service.verify_chain(db)
+        assert result["valid"] is True, f"Audit chain verification failed: {result['errors']}"
+        assert len(result["errors"]) == 0
+        assert result["checked"] >= 196
+    finally:
+        db.close()
+        engine.dispose()
+
 
 

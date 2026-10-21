@@ -101,16 +101,88 @@ def is_document_owner(user: User, document: Document) -> bool:
     return document.owner_id == user.id
 
 
+def can(
+    user: User,
+    action: str,
+    document: Document | None = None,
+    db: Session | None = None,
+) -> bool:
+    """
+    Central role-based and document-level authorization function.
+    Fails closed (returns False by default).
+
+    Role Boundaries:
+    - Inactive / offboarded accounts are denied on all actions.
+    - Admin: can manage users, view all audit metadata, verify audit chain,
+      transfer document ownership during administrative workflows.
+      Must NOT automatically read, preview, or download confidential document contents
+      unless granted explicitly as owner or recipient.
+    - Owner: can manage own documents, upload, grant/revoke recipient access,
+      and delete own documents. Cannot access other owners' documents.
+    - Editor: can read, preview, download, and edit documents explicitly shared with them.
+      Cannot grant permissions, delete documents, or manage users.
+    - Viewer: can read, preview, and download explicitly shared documents.
+      Cannot edit, delete, share, upload, or manage users.
+    """
+    if not user or not user.is_active:
+        return False
+
+    # 1. Administrative / user management actions
+    if action in ("manage_users", "create_user", "update_user", "offboard_user"):
+        return user.role == UserRole.admin
+
+    # 2. Global audit actions
+    if action in ("view_audit_trail", "verify_audit_chain", "audit_stats", "audit_actions"):
+        return user.role == UserRole.admin
+
+    # 3. Document upload (only Owners and Administrators can upload new documents)
+    if action == "document_upload":
+        return user.role in (UserRole.owner, UserRole.admin)
+
+    # 4. Document-level actions require document object
+    if document is None:
+        return False
+
+    # Document ownership check
+    is_owner = (document.owner_id == user.id)
+
+    # Delete & permission management are OWNER-ONLY
+    if action == "delete":
+        return is_owner
+
+    if action in ("manage_permissions", "grant_permission", "revoke_permission", "update_permission"):
+        return is_owner
+
+    # Ownership transfer allowed for document owner or system admin
+    if action == "transfer_ownership":
+        return is_owner or (user.role == UserRole.admin)
+
+    # Read / preview / download
+    if action in ("read", "preview", "download"):
+        if is_owner:
+            return True
+        if db is None:
+            return False
+        return get_user_permission(user, document, db) is not None
+
+    # Edit / update metadata / replace content
+    if action in ("edit", "update", "replace_content"):
+        if is_owner:
+            return True
+        if db is None:
+            return False
+        return get_user_permission(user, document, db) == PermissionLevel.editor
+
+    # Deny by default
+    return False
+
+
 def can_read_document(user: User, document: Document, db: Session) -> bool:
-    if is_document_owner(user, document):
-        return True
-    return get_user_permission(user, document, db) is not None
+    return can(user, "read", document, db)
 
 
 def can_edit_document(user: User, document: Document, db: Session) -> bool:
-    if is_document_owner(user, document):
-        return True
-    return get_user_permission(user, document, db) == PermissionLevel.editor
+    return can(user, "edit", document, db)
 
 
 def require_document_access(
@@ -126,24 +198,22 @@ def require_document_access(
 
     required: "viewer" | "editor" | "owner"
     """
-    is_owner = is_document_owner(user, document)
     if required == "owner":
-        if not is_owner:
+        if not can(user, "delete", document, db):
             raise HTTPException(
                 status_code=403,
                 detail="Only the document owner can perform this action.",
             )
         return
 
-    if is_owner:
+    if required == "editor":
+        if not can(user, "edit", document, db):
+            raise HTTPException(status_code=403, detail="Editor permission required.")
         return
 
-    perm_level = get_user_permission(user, document, db)
-    if perm_level is None:
+    # default / viewer
+    if not can(user, "read", document, db):
         raise HTTPException(
             status_code=403,
             detail="You do not have permission to access this document.",
         )
-
-    if required == "editor" and perm_level != PermissionLevel.editor:
-        raise HTTPException(status_code=403, detail="Editor permission required.")

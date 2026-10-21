@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     STORAGE_PATH: str = "./storage"
     APP_ENV: str = "development"
     ALLOWED_ORIGINS: str = "http://localhost:3000"
+    ALLOW_PUBLIC_REGISTRATION: bool = False
 
     @validator("DATABASE_URL", pre=True, always=True)
     def normalize_db_url(cls, v):

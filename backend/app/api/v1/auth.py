@@ -5,6 +5,7 @@ from app.db.session import get_db
 from app.db.models import User, AuditOutcome, UserRole
 from app.core.security import verify_password, create_access_token, get_password_hash
 from app.core.deps import get_current_user
+from app.core.config import settings
 from app.schemas.schemas import TokenResponse, UserOut, UserCreate
 from app.services import audit
 
@@ -82,6 +83,21 @@ def register(
     request: Request,
     db: Session = Depends(get_db),
 ):
+    # Enforce company account policy: disable public self-registration
+    if not settings.ALLOW_PUBLIC_REGISTRATION:
+        audit.record_from_request(
+            db,
+            request,
+            action="REGISTRATION_DENIED",
+            outcome=AuditOutcome.denied,
+            actor_email=body.email,
+            details="Public self-registration is disabled in company mode.",
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Public self-registration is disabled for this organization. Accounts must be provisioned by an administrator.",
+        )
+
     # Reject attempts to self-assign Admin, Owner, or other privileged roles via public registration
     if body.role and body.role not in (UserRole.viewer,):
         raise HTTPException(

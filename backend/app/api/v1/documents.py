@@ -11,6 +11,7 @@ from app.db.models import User, Document, DocumentPermission, PermissionLevel, A
 from app.core.deps import (
     get_current_user,
     get_document_or_404,
+    can,
     can_read_document,
     can_edit_document,
     is_document_owner,
@@ -173,6 +174,16 @@ async def upload_document(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    if not can(current_user, "document_upload"):
+        audit.record_from_request(
+            db, request, action="DOCUMENT_UPLOAD_DENIED", outcome=AuditOutcome.denied,
+            actor=current_user, details="Role does not have permission to upload documents.",
+        )
+        raise HTTPException(
+            status_code=403,
+            detail="Insufficient permissions. Only Owners and Administrators can upload new documents.",
+        )
+
     filename = _safe_filename(file.filename)
     content = await file.read()
     is_valid, detected_mime, error_msg = validate_upload(filename, content)
@@ -376,7 +387,7 @@ def delete_document(
     db: Session = Depends(get_db),
 ):
     doc = get_document_or_404(document_id, db)
-    if not is_document_owner(current_user, doc):
+    if not can(current_user, "delete", doc, db):
         _deny(db, request, current_user, "DOCUMENT_DELETE_DENIED", doc, "Only owners can delete documents.")
 
     doc.is_deleted = True
@@ -419,7 +430,7 @@ def list_permissions(
     db: Session = Depends(get_db),
 ):
     doc = get_document_or_404(document_id, db)
-    if not is_document_owner(current_user, doc):
+    if not can(current_user, "manage_permissions", doc, db):
         _deny(db, request, current_user, "PERMISSION_LIST_DENIED", doc, "Only the document owner can list permissions.")
 
     perms = db.query(DocumentPermission).filter(DocumentPermission.document_id == doc.id).all()
@@ -436,7 +447,7 @@ def grant_permission(
     db: Session = Depends(get_db),
 ):
     doc = get_document_or_404(document_id, db)
-    if not is_document_owner(current_user, doc):
+    if not can(current_user, "grant_permission", doc, db):
         _deny(db, request, current_user, "PERMISSION_GRANT_DENIED", doc, "Non-owner attempted to grant permission.")
 
     grantee = db.query(User).filter(User.email == str(body.grantee_email), User.is_active == True).first()
@@ -491,7 +502,7 @@ def revoke_permission(
     db: Session = Depends(get_db),
 ):
     doc = get_document_or_404(document_id, db)
-    if not is_document_owner(current_user, doc):
+    if not can(current_user, "revoke_permission", doc, db):
         _deny(db, request, current_user, "PERMISSION_REVOKE_DENIED", doc, "Non-owner attempted to revoke permission.")
 
     import uuid
@@ -533,7 +544,7 @@ def update_permission(
     db: Session = Depends(get_db),
 ):
     doc = get_document_or_404(document_id, db)
-    if not is_document_owner(current_user, doc):
+    if not can(current_user, "update_permission", doc, db):
         _deny(db, request, current_user, "PERMISSION_UPDATE_DENIED", doc, "Non-owner attempted to update permission.")
 
     import uuid
@@ -580,7 +591,7 @@ def batch_grant_permissions(
     db: Session = Depends(get_db),
 ):
     doc = get_document_or_404(document_id, db)
-    if not is_document_owner(current_user, doc):
+    if not can(current_user, "manage_permissions", doc, db):
         _deny(db, request, current_user, "PERMISSION_GRANT_DENIED", doc, "Non-owner attempted batch permission grant.")
 
     results = []
@@ -663,7 +674,7 @@ def transfer_document_ownership(
     """
     import uuid
     doc = get_document_or_404(document_id, db)
-    if doc.owner_id != current_user.id and current_user.role != UserRole.admin:
+    if not can(current_user, "transfer_ownership", doc, db):
         _deny(db, request, current_user, "DOCUMENT_TRANSFER_DENIED", doc, "Only document owner or admin can transfer ownership.")
 
     try:

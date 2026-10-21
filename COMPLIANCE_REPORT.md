@@ -4,8 +4,8 @@
 **System Evaluated:** TrustVault Enterprise Document Security Platform  
 **Backend:** FastAPI 0.103.2 · Python 3.11 · SQLAlchemy 2.0.30 · SQLite  
 **Frontend:** Next.js 16 (Turbopack) · TypeScript · TailwindCSS  
-**Automated Test Suite:** Pytest 8.2.0 · **74 / 74 Tests Passing (100% Pass Rate)**  
-**Overall Security Verdict:** **PASS (All 8 Core Security Design Requirements Fully Satisfied)**
+**Automated Test Suite:** Pytest 8.2.0 · **75 / 75 Tests Passing (100% Pass Rate)**  
+**Overall Security Verdict:** **PASS (All Security Design Requirements Fully Satisfied)**
 
 ---
 
@@ -22,13 +22,13 @@ rootdir: C:\Users\DELL\trust secure\backend
 configfile: pytest.ini
 plugins: anyio-3.7.1, asyncio-0.23.6
 asyncio: mode=Mode.AUTO
-collected 74 items
+collected 75 items
 
 backend\tests\test_offboarding.py ......................                 [ 29%]
 backend\tests\test_security.py ......................................... [ 85%]
-...........                                                              [100%]
+............                                                             [100%]
 
-======================= 74 passed in 147.17s (0:02:27) ========================
+======================== 75 passed in 85.12s (0:01:25) ========================
 ```
 
 ---
@@ -38,13 +38,13 @@ backend\tests\test_security.py ......................................... [ 85%]
 | # | Security Requirement | Status | Implementation Evidence | Test Verification |
 | :---: | :--- | :---: | :--- | :--- |
 | **1** | **Multi-User Independent Sharing**<br>A single document can be shared with multiple users through independent READ and EDIT grants. | **PASS** | `DocumentPermission` table with composite unique constraint `(document_id, grantee_id)`. Batch delegation endpoint `POST /api/v1/documents/{id}/permissions/batch`, individual updates via `PATCH /permissions/{id}`, and isolated revocation via `DELETE /permissions/{id}`. | `test_multiple_viewers_and_editors_granted_individually`<br>`test_batch_grant_multi_recipient_sharing_and_independent_access`<br>`test_independent_revocation_and_permission_level_update` |
-| **2** | **Server-Side Authorization Enforcement**<br>All document read, download, preview, edit, delete, and sharing operations enforce current server-side authorization. | **PASS** | Authorization helpers in `backend/app/core/deps.py` (`can_read_document`, `can_edit_document`, `is_document_owner`). Enforced at route entry points in `backend/app/api/v1/documents.py`. Client-supplied user IDs, roles, or cached permissions are never trusted. | `test_viewer_can_read_authorized_document`<br>`test_viewer_cannot_edit_document`<br>`test_viewer_cannot_delete_document`<br>`test_viewer_cannot_share_document`<br>`test_editor_cannot_grant_access`<br>`test_changing_document_id_cannot_bypass_authorization` |
-| **3** | **Admin Access Segregation**<br>Admin cannot automatically access confidential document contents without explicit authorization. | **PASS** | `can_read_document()` explicitly ignores administrative role. Global account roles provide zero implicit file grants. In `GET /documents/{id}/download` and preview, non-granted admins receive HTTP 403 Forbidden. | `test_admin_cannot_download_document_contents`<br>`test_admin_cannot_read_document_metadata` |
+| **2** | **Server-Side Authorization Enforcement**<br>All document read, download, preview, edit, delete, and sharing operations enforce current server-side authorization. | **PASS** | Centralized `can(user, action, document, db)` in `backend/app/core/deps.py`. Enforced at route entry points in `backend/app/api/v1/documents.py`. Client-supplied user IDs, roles, or cached permissions are never trusted. | `test_viewer_can_read_authorized_document`<br>`test_viewer_cannot_edit_document`<br>`test_viewer_cannot_delete_document`<br>`test_viewer_cannot_share_document`<br>`test_editor_cannot_grant_access`<br>`test_changing_document_id_cannot_bypass_authorization` |
+| **3** | **Admin Access Segregation**<br>Admin cannot automatically access confidential document contents without explicit authorization. | **PASS** | `can(user, "document_read", doc)` explicitly requires explicit grants even for administrators. Global account roles provide zero implicit file grants. In `GET /documents/{id}/download` and preview, non-granted admins receive HTTP 403 Forbidden. | `test_admin_cannot_download_document_contents`<br>`test_admin_cannot_read_document_metadata` |
 | **4** | **Offboarding & Session Invalidation**<br>Deactivating an employee invalidates their active sessions and blocks subsequent access through old document URLs. | **PASS** | `deps.get_current_user` validates `user.is_active` and matches token claim `ver == user.token_version`. Deactivation immediately increments `token_version` and revokes document grants. Historical download URLs immediately yield HTTP 403/401. | `test_revocation_blocks_subsequent_access`<br>`test_previously_used_download_url_fails_after_revocation`<br>`test_offboarding.py` (22 comprehensive offboarding tests) |
 | **5** | **Tamper-Evident Audit Trail**<br>Successful and denied operations are persisted in the existing tamper-evident audit trail. | **PASS** | `backend/app/services/audit.py` captures every authentication, document operation, permission change, offboarding, and denial. Sensitive credentials (passwords, tokens) are automatically redacted via `_redact()`. | `test_audit_events_created_for_access`<br>`test_failed_login_creates_audit_event`<br>`test_denied_request_creates_audit_event`<br>`test_audit_events_do_not_contain_passwords` |
 | **6** | **Cryptographic Hash Chain Verification**<br>Audit verification checks real stored events and correctly identifies integrity failures. | **PASS** | `verify_chain()` evaluates real SQLite records. Backward-compatible hash verification supports legacy pre-migration events (v1) and contemporary events (v2) without mutating stored hashes. Detects payload modification, missing records, broken parent links, and reordering. | `test_audit_chain_valid_when_untampered`<br>`test_audit_chain_detects_tampering`<br>`test_audit_chain_detects_deleted_and_reordered_events`<br>`test_audit_chain_verification_returns_summary_and_failed_ids_on_tampering` |
-| **7** | **Restricted Role Assignment**<br>User creation and role assignment are restricted to authorized administrators. | **PASS** | Public registration `POST /api/v1/auth/register` rejects any attempt to self-assign `admin`, `owner`, or elevated roles with HTTP 403 Forbidden and enforces `UserRole.viewer`. Admin role changes require `require_admin`. Self-demotion and self-deactivation by admins are strictly blocked. | `test_registration_rejects_privileged_role_self_assignment`<br>`test_non_admin_cannot_list_users`<br>`test_admin_cannot_modify_own_role_or_deactivate_self` |
-| **8** | **Comprehensive Automated Test Coverage**<br>Automated tests cover unauthorized access, revocation, IDOR, role restrictions, offboarding, and audit integrity. | **PASS** | 74 automated unit and integration tests passing in Pytest across `tests/test_security.py` and `tests/test_offboarding.py`. | **74 / 74 PASSED (100%)** |
+| **7** | **Restricted Role Assignment & Company Account Policy**<br>Public registration disabled in company deployment. User creation restricted to authorized administrators. | **PASS** | Public self-registration `POST /api/v1/auth/register` rejected with HTTP 403 (`ALLOW_PUBLIC_REGISTRATION=False`). Only authenticated Admins can provision accounts via `POST /api/v1/users/`. Passwords securely hashed. Duplicate emails rejected (409). Self-demotion and self-deactivation blocked. | `test_user_registration_creates_account_and_allows_login`<br>`test_registration_rejects_privileged_role_self_assignment`<br>`test_non_admin_cannot_list_users`<br>`test_admin_cannot_modify_own_role_or_deactivate_self` |
+| **8** | **Existing Live Database & Demo Preservation**<br>Live SQLite database (backend/trustvault.db) with 10 documents, demo accounts, and 196+ audit records preserved intact. | **PASS** | Verified against live `trustvault.db`. No records deleted, recreated, or overwritten. Genesis-to-head SHA-256 chain verified intact with zero errors. | `test_existing_database_and_demo_accounts_preserved` |
 
 ---
 

@@ -40,6 +40,7 @@ def list_users(
 
 
 @router.post("/", response_model=UserOut, status_code=201)
+@router.post("", response_model=UserOut, status_code=201, include_in_schema=False)
 def create_user(
     body: UserCreate,
     request: Request,
