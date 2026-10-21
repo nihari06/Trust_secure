@@ -1,0 +1,14 @@
+{
+  "name": "trust-secure",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "npm --prefix frontend run dev",
+    "dev:frontend": "npm --prefix frontend run dev",
+    "dev:backend": "backend\\.venv\\Scripts\\python.exe -m uvicorn app.main:app --app-dir backend --reload --host 127.0.0.1 --port 8000",
+    "seed": "backend\\.venv\\Scripts\\python.exe backend/seed.py",
+    "build": "npm --prefix frontend run build",
+    "start": "npm --prefix frontend run start",
+    "lint": "npm --prefix frontend run lint"
+  }
+}
