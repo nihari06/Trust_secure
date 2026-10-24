@@ -1,0 +1,10 @@
+# Ignore backend and Python files on Vercel frontend builds
+backend
+backend/**
+run.py
+verify.py
+requirements.txt
+runtime.txt
+.python-version
+start-all.bat
+start-backend.bat
