@@ -2,9 +2,8 @@
 // The next.config.ts rewrite sends /api/v1/* → http://127.0.0.1:8000/api/v1/*
 // Set NEXT_PUBLIC_BACKEND_URL only when deploying outside the dev proxy.
 const BACKEND_URL =
-  typeof window !== "undefined"
-    ? "" // browser: relative path → goes through Next.js proxy
-    : process.env.NEXT_PUBLIC_BACKEND_URL || "http://127.0.0.1:5000"; // SSR fallback
+  process.env.NEXT_PUBLIC_BACKEND_URL ||
+  (typeof window !== "undefined" ? "" : "http://127.0.0.1:5000");
 
 export interface ApiError {
   detail: string;
