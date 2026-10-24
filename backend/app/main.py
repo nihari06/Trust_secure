@@ -1,7 +1,6 @@
 import uuid
 from contextlib import asynccontextmanager
-from typing import Optional
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
 from app.api.v1.router import router
@@ -56,11 +55,3 @@ app.include_router(router)
 def health():
     return {"status": "ok", "service": "TrustVault API"}
 
-
-# ─── Unknown routes ────────────────────────────────────────────────────────────
-# The frontend is served by Vercel. Any non-API path that reaches this backend
-# is a misconfigured request — return a clean 404 rather than proxying to a
-# local Next.js server that does not exist on Render.
-@app.api_route("/{full_path:path}", methods=["GET", "HEAD", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"], include_in_schema=False)
-async def unknown_route(request: Request, full_path: str = ""):
-    raise HTTPException(status_code=404, detail="Not found — frontend is served by Vercel")
