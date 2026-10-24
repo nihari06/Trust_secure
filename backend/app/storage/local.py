@@ -27,7 +27,7 @@ def save_file(storage_key: str, content: bytes) -> None:
     # Prevent path traversal
     dest = dest.resolve()
     root = _storage_root().resolve()
-    if not str(dest).startswith(str(root)):
+    if not str(dest).lower().startswith(str(root).lower()):
         raise ValueError("Path traversal attempt detected.")
     dest.write_bytes(content)
 
@@ -36,7 +36,7 @@ def read_file(storage_key: str) -> bytes:
     """Read file content from private storage."""
     dest = (_storage_root() / storage_key).resolve()
     root = _storage_root().resolve()
-    if not str(dest).startswith(str(root)):
+    if not str(dest).lower().startswith(str(root).lower()):
         raise ValueError("Path traversal attempt detected.")
     if not dest.exists():
         raise FileNotFoundError(f"Storage key not found: {storage_key}")
@@ -46,7 +46,7 @@ def read_file(storage_key: str) -> bytes:
 def delete_file(storage_key: str) -> None:
     dest = (_storage_root() / storage_key).resolve()
     root = _storage_root().resolve()
-    if not str(dest).startswith(str(root)):
+    if not str(dest).lower().startswith(str(root).lower()):
         raise ValueError("Path traversal attempt detected.")
     if dest.exists():
         dest.unlink()

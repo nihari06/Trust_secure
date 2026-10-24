@@ -83,7 +83,6 @@ def register(
     request: Request,
     db: Session = Depends(get_db),
 ):
-    # Enforce company account policy: disable public self-registration
     if not settings.ALLOW_PUBLIC_REGISTRATION:
         audit.record_from_request(
             db,
@@ -100,22 +99,41 @@ def register(
 
     # Reject attempts to self-assign Admin, Owner, or other privileged roles via public registration
     if body.role and body.role not in (UserRole.viewer,):
+        audit.record_from_request(
+            db,
+            request,
+            action="REGISTRATION_DENIED",
+            outcome=AuditOutcome.denied,
+            actor_email=body.email,
+            details="Attempted to self-assign privileged role during registration.",
+        )
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Self-assigning privileged roles is forbidden. New accounts are assigned the viewer role.",
         )
 
-    existing = db.query(User).filter(User.email == body.email).first()
+    # Validate password confirmation if provided
+    if body.confirm_password and body.password != body.confirm_password:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Passwords do not match.",
+        )
+
+    existing = db.query(User).filter(User.email == body.email.strip().lower()).first()
     if existing:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Email already registered.",
         )
+
+    # Assign safe default role: Viewer (can upload and manage own documents, zero privileged access)
+    assigned_role = UserRole.viewer
+
     user = User(
-        email=body.email,
-        full_name=body.full_name,
+        email=body.email.strip().lower(),
+        full_name=body.full_name.strip(),
         hashed_password=get_password_hash(body.password),
-        role=UserRole.viewer,
+        role=assigned_role,
     )
     db.add(user)
     db.commit()
@@ -129,6 +147,6 @@ def register(
         resource_type="user",
         resource_id=str(user.id),
         resource_name=user.email,
-        details=f"Registered account with role {user.role.value}",
+        details=f"Self-registered account with safe default role '{user.role.value}'",
     )
     return user

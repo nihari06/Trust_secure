@@ -1,0 +1,17 @@
+.venv/
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/*.pyd
+test_out.txt
+**/*.backup*
+**/*.bak
+**/.pytest_cache/
+**/node_modules/
+**/.next/
+**/*.log
+.vscode/
+*.db.*_backup
+*.db.safe_*
+*.original_*
+

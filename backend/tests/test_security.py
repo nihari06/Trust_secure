@@ -1179,19 +1179,21 @@ def test_user_registration_creates_account_and_allows_login(client, db_session):
         "password": "SecurePassword123!",
         "role": "viewer",
     }
-    # 1. Public self-registration is rejected with 403 in company mode
+    # 1. Public self-registration is enabled and creates account successfully
     reg_resp = client.post("/api/v1/auth/register", json=reg_payload)
-    assert reg_resp.status_code == 403
-    assert "Public self-registration is disabled" in reg_resp.json()["detail"]
+    assert reg_resp.status_code == 201
+    assert reg_resp.json()["email"] == "publicuser@trustvault.dev"
+    assert "password" not in reg_resp.json()
+    assert "hashed_password" not in reg_resp.json()
 
-    # Verify audit event for registration denial was logged
-    denied_evt = (
+    # Verify audit event for registration was logged
+    reg_evt = (
         db_session.query(AuditEvent)
-        .filter(AuditEvent.action == "REGISTRATION_DENIED", AuditEvent.actor_email == "publicuser@trustvault.dev")
+        .filter(AuditEvent.action == "USER_REGISTERED", AuditEvent.actor_email == "publicuser@trustvault.dev")
         .first()
     )
-    assert denied_evt is not None
-    assert denied_evt.outcome == AuditOutcome.denied
+    assert reg_evt is not None
+    assert reg_evt.outcome == AuditOutcome.success
 
     # 2. Unauthenticated request to POST /api/v1/users is rejected (401)
     admin_create_payload = {
@@ -1451,7 +1453,7 @@ def test_registration_rejects_privileged_role_self_assignment(client, db_session
     2. If public registration were enabled in dev mode, self-assigning privileged roles (Admin, Owner) is strictly forbidden.
     3. Non-admins cannot grant Admin or elevated roles through user management APIs.
     """
-    # 1. Company mode: all public registration attempts are rejected with 403
+    # 1. Self-assigning privileged role (Admin) via public registration is rejected with 403
     resp_company_admin = client.post("/api/v1/auth/register", json={
         "email": "hacker-admin@test.com",
         "full_name": "Hacker Admin",
@@ -1459,7 +1461,7 @@ def test_registration_rejects_privileged_role_self_assignment(client, db_session
         "role": "admin",
     })
     assert resp_company_admin.status_code == 403
-    assert "Public self-registration is disabled" in resp_company_admin.json()["detail"]
+    assert "Self-assigning privileged roles is forbidden" in resp_company_admin.json()["detail"]
 
     # 2. Dev mode fallback: test role self-assignment guard when registration is enabled
     try:
@@ -1494,8 +1496,7 @@ def test_registration_rejects_privileged_role_self_assignment(client, db_session
         assert resp_viewer.status_code == 201
         assert resp_viewer.json()["role"] == "viewer"
     finally:
-        # Restore company mode policy
-        settings.ALLOW_PUBLIC_REGISTRATION = False
+        settings.ALLOW_PUBLIC_REGISTRATION = True
 
     # 3. Non-admin cannot assign admin roles through API
     viewer = make_user(db_session, "viewer-elevate@test.com", "Pass1234!", UserRole.viewer)
@@ -1618,6 +1619,124 @@ def test_existing_database_and_demo_accounts_preserved():
     finally:
         db.close()
         engine.dispose()
+
+
+def test_registration_validation_and_duplicate_rejection(client, db_session):
+    # 1. Missing / short password
+    res_short = client.post("/api/v1/auth/register", json={
+        "email": "valid_user_reg@trustvault.dev",
+        "full_name": "Valid Name",
+        "password": "short",
+    })
+    assert res_short.status_code in (400, 422)
+
+    # 2. Password mismatch
+    res_mismatch = client.post("/api/v1/auth/register", json={
+        "email": "valid_user_reg@trustvault.dev",
+        "full_name": "Valid Name",
+        "password": "ValidPassword123!",
+        "confirm_password": "DifferentPassword123!",
+    })
+    assert res_mismatch.status_code == 400
+    assert "Passwords do not match" in res_mismatch.json()["detail"]
+
+    # 3. Successful registration
+    res_ok = client.post("/api/v1/auth/register", json={
+        "email": "unique_public@trustvault.dev",
+        "full_name": "Unique Public",
+        "password": "ValidPassword123!",
+        "confirm_password": "ValidPassword123!",
+    })
+    assert res_ok.status_code == 201
+    assert res_ok.json()["email"] == "unique_public@trustvault.dev"
+
+    # 4. Duplicate rejection
+    res_dup = client.post("/api/v1/auth/register", json={
+        "email": "unique_public@trustvault.dev",
+        "full_name": "Unique Public",
+        "password": "ValidPassword123!",
+        "confirm_password": "ValidPassword123!",
+    })
+    assert res_dup.status_code == 409
+
+
+def test_user_password_change_invalidates_prior_sessions(client, db_session):
+    user = make_user(db_session, "change-pass@trustvault.dev", "OldPassword123!", UserRole.viewer)
+    old_token = get_token(client, "change-pass@trustvault.dev", "OldPassword123!")
+
+    # Request password change with wrong old password
+    bad_res = client.post(
+        "/api/v1/users/me/password",
+        json={"current_password": "WrongPassword!", "new_password": "NewPassword123!", "confirm_new_password": "NewPassword123!"},
+        headers=auth_headers(old_token),
+    )
+    assert bad_res.status_code == 400
+
+    # Successful password change
+    ok_res = client.post(
+        "/api/v1/users/me/password",
+        json={"current_password": "OldPassword123!", "new_password": "NewPassword123!", "confirm_new_password": "NewPassword123!"},
+        headers=auth_headers(old_token),
+    )
+    assert ok_res.status_code == 200
+    new_token = ok_res.json()["access_token"]
+    assert new_token is not None
+
+    # Prior old_token is now INVALID (token_version was incremented)
+    old_req = client.get("/api/v1/auth/me", headers=auth_headers(old_token))
+    assert old_req.status_code == 401
+
+    # New token works
+    new_req = client.get("/api/v1/auth/me", headers=auth_headers(new_token))
+    assert new_req.status_code == 200
+
+    # Can log in with new password
+    login_new = client.post("/api/v1/auth/login", data={"username": "change-pass@trustvault.dev", "password": "NewPassword123!"})
+    assert login_new.status_code == 200
+
+
+def test_admin_and_owner_can_manage_permissions_unauthorized_denied(client, db_session):
+    owner = make_user(db_session, "doc-owner-perm@trustvault.dev", "Pass1234!", UserRole.owner)
+    owner_token = get_token(client, "doc-owner-perm@trustvault.dev", "Pass1234!")
+    admin = make_user(db_session, "admin-perm-mgr@trustvault.dev", "Pass1234!", UserRole.admin)
+    admin_token = get_token(client, "admin-perm-mgr@trustvault.dev", "Pass1234!")
+    viewer = make_user(db_session, "viewer-unauth-perm@trustvault.dev", "Pass1234!", UserRole.viewer)
+    viewer_token = get_token(client, "viewer-unauth-perm@trustvault.dev", "Pass1234!")
+    recipient = make_user(db_session, "recipient-perm@trustvault.dev", "Pass1234!", UserRole.viewer)
+
+    doc = make_document(db_session, owner, "Owner Confidential File")
+
+    # 1. Unauthorized Viewer attempts to grant permission -> 403 Denied
+    unauth_grant = client.post(
+        f"/api/v1/documents/{doc.id}/permissions",
+        json={"grantee_email": recipient.email, "permission_level": "viewer"},
+        headers=auth_headers(viewer_token),
+    )
+    assert unauth_grant.status_code == 403
+
+    # 2. Document Owner grants permission -> 201 Created
+    owner_grant = client.post(
+        f"/api/v1/documents/{doc.id}/permissions",
+        json={"grantee_email": recipient.email, "permission_level": "viewer"},
+        headers=auth_headers(owner_token),
+    )
+    assert owner_grant.status_code == 201
+    perm_id = owner_grant.json()["id"]
+
+    # 3. Unauthorized Viewer attempts to revoke permission -> 403 Denied
+    unauth_revoke = client.delete(
+        f"/api/v1/documents/{doc.id}/permissions/{perm_id}",
+        headers=auth_headers(viewer_token),
+    )
+    assert unauth_revoke.status_code == 403
+
+    # 4. Admin can manage/revoke permission -> 200 OK
+    admin_revoke = client.delete(
+        f"/api/v1/documents/{doc.id}/permissions/{perm_id}",
+        headers=auth_headers(admin_token),
+    )
+    assert admin_revoke.status_code in (200, 204)
+
 
 
 

@@ -1,150 +1,83 @@
 # THREATS.md — TrustVault Threat Model & Security Analysis
 
 ## Overview
-This document describes potential attacks against TrustVault, their severity, and how the application mitigates each one. It follows the OWASP Top 10 and aligns with OWASP Authorization Cheat Sheet guidance.
+This document describes protected assets, potential threats against TrustVault, their severity, implemented mitigations, and remaining risks. It follows the OWASP Top 10 and aligns with the OWASP Authorization Cheat Sheet.
 
 ---
 
-## Threat 1 — Broken Object-Level Authorization (BOLA / IDOR)
+## 1. Protected Assets
 
-**Attack:** An authenticated user (e.g. Charan) guesses or enumerates a document UUID and directly requests:
-```
-GET /api/v1/documents/<known-uuid>
-GET /api/v1/documents/<known-uuid>/download
-```
-
-**Risk:** CRITICAL — exposes confidential documents to unauthorized users.
-
-**Mitigation:**
-- Every API endpoint re-checks `doc.owner_id == current_user.id` OR a valid active `DocumentPermission` row exists.
-- There is **no frontend-only guard** — the backend enforces this on every request.
-- Unauthorized attempts return HTTP 403 and are logged in the tamper-evident audit trail.
-- Test proof: `test_owner_cannot_access_another_owners_document`, `test_admin_cannot_download_document_contents`
+TrustVault protects the following primary assets:
+1. **Confidential Document Content:** User-uploaded confidential and proprietary files stored on content-addressable storage outside public static directories.
+2. **Access Control & Permissions Ledger:** Granular per-recipient `document_permissions` determining READ and EDIT capabilities.
+3. **Audit Trail & Cryptographic Chain:** Immutable, SHA-256 Merkle-linked audit records verifying all actions and security rejections.
+4. **User Credentials & Session Tokens:** Passlib bcrypt password hashes and cryptographically signed JWT tokens with version tracking.
 
 ---
 
-## Threat 2 — Stale Permission / Revocation Bypass
+## 2. Threat Analysis & Mitigations
 
-**Attack:** Bhanu has a valid JWT token and had access. Anu revokes Bhanu's permission. Bhanu re-uses the same JWT to request the document.
+### Threat 1 — Broken Object-Level Authorization (BOLA / IDOR)
+- **Attack:** An authenticated user crafts or enumerates document IDs (`/api/v1/documents/{id}/download` or `/api/v1/documents/{id}`) to access other users' files.
+- **Risk:** CRITICAL — unauthorized disclosure of confidential files.
+- **Implemented Mitigation:** Server-side `can(user, action, document, db)` re-evaluates database ownership and active permissions on every request. URL tampering is rejected with HTTP 403 and logged in the audit trail.
+- **Verification:** `test_viewer_c_cannot_access_document_shared_with_b`, `test_user_cannot_list_others_documents`.
 
-**Risk:** HIGH — user retains access beyond the intended window.
+### Threat 2 — Stale Permission / Revocation Bypass
+- **Attack:** A revoked user re-submits requests using an existing, non-expired JWT.
+- **Risk:** HIGH — access persistence beyond authorization window.
+- **Implemented Mitigation:** Authorization checks query the live database (`DocumentPermission.is_active == True`), not cached JWT claims. Revocation immediately takes effect without requiring token expiration.
+- **Verification:** `test_revocation_blocks_subsequent_access`, `test_revoked_user_cannot_download`.
 
-**Mitigation:**
-- Permissions are checked **live against the database** on every request, not cached in the JWT.
-- `DocumentPermission.is_active == True` is required; revocation sets `is_active = False` immediately.
-- The JWT expiry (30 minutes) is a secondary layer, not the primary access control.
-- Test proof: `test_revocation_blocks_subsequent_access`, `test_revoked_user_cannot_download`
+### Threat 3 — Privilege Escalation via Public Registration
+- **Attack:** A newly registering user submits `role: "admin"` or `role: "owner"` in request payload to gain administrative access.
+- **Risk:** CRITICAL — full compromise of administrative operations.
+- **Implemented Mitigation:** Public registration endpoint rejects any self-assigned privileged role with HTTP 403. Roles cannot be elevated through client requests.
+- **Verification:** `test_user_registration_creates_account_and_allows_login`, `test_registration_rejects_privileged_role_self_assignment`.
 
----
+### Threat 4 — Unauthorized Permission Delegation
+- **Attack:** A Viewer or Editor attempts to grant or revoke document access to third parties.
+- **Risk:** HIGH — unauthorized lateral expansion of document access.
+- **Implemented Mitigation:** Permission management is restricted strictly to the document Owner and authorized Administrators (`is_owner or user.role == UserRole.admin`).
+- **Verification:** `test_admin_and_owner_can_manage_permissions_unauthorized_denied`, `test_viewer_cannot_share_document`.
 
-## Threat 3 — Privilege Escalation (Viewer → Editor → Owner)
+### Threat 5 — Audit Trail Tampering
+- **Attack:** An attacker alters database records to conceal unauthorized access.
+- **Risk:** HIGH — loss of forensic accountability.
+- **Implemented Mitigation:** SHA-256 Merkle-chained records where each event embeds the previous event's hash. Gap, modification, or reordering causes `verify_chain()` to report tampering with exact event IDs.
+- **Verification:** `test_audit_chain_detects_tampering`, `test_audit_chain_valid_when_untampered`.
 
-**Attack:** A viewer crafts a PATCH or DELETE request directly to the API, bypassing the UI button hiding.
+### Threat 6 — Malicious File Uploads & Polyglot Exploitation
+- **Attack:** Uploading executable scripts (`.exe`, `.sh`, `.php`) renamed as `.pdf` or `.png`.
+- **Risk:** HIGH — remote code execution or malware storage.
+- **Implemented Mitigation:** Magic-byte MIME inspection via `file_validator.py`, strict extension allowlist, 10MB maximum file size limit, and randomized content-addressable storage keys.
+- **Verification:** `test_upload_rejects_unsupported_extension`, `test_upload_rejects_oversized_file`.
 
-**Risk:** HIGH — modifies or destroys documents without authorization.
+### Threat 7 — Session Theft & Brute-Force Login
+- **Attack:** Credential guessing or reusing stolen JWT tokens after password change or employee departure.
+- **Risk:** HIGH — account takeover.
+- **Implemented Mitigation:**
+  - Secure bcrypt password hashing with salt.
+  - Login returns generic error messages without revealing email registration status.
+  - `token_version` tracking: password changes and offboarding increment the token version, instantly invalidating all outstanding JWTs.
+- **Verification:** `test_user_password_change_invalidates_prior_sessions`, `test_offboarded_user_cannot_login`.
 
-**Mitigation:**
-- PATCH requires `PermissionLevel.editor` or ownership. Viewer permission alone → HTTP 403.
-- DELETE is **owner-only**. No permission level can substitute for ownership.
-- UI hiding is supplemental UX, not security.
-- Test proof: `test_viewer_cannot_edit_document`, `test_viewer_cannot_delete_document`, `test_editor_cannot_delete_document`
-
----
-
-## Threat 4 — Unauthorized Permission Grant (Permission Escalation)
-
-**Attack:** A viewer or editor attempts to grant themselves or others access to a document they don't own.
-
-**Risk:** HIGH — allows lateral access spread.
-
-**Mitigation:**
-- `POST /documents/{id}/permissions` requires `doc.owner_id == current_user.id`. All other roles → HTTP 403.
-- Test proof: `test_viewer_cannot_share_document`, `test_editor_cannot_grant_access`
-
----
-
-## Threat 5 — Audit Trail Tampering
-
-**Attack:** A privileged insider modifies the `audit_events` table to hide a security incident (e.g., removes a DOCUMENT_DOWNLOAD row).
-
-**Risk:** HIGH — enables cover-up of unauthorized access.
-
-**Mitigation:**
-- Each audit event is hashed with SHA-256 including the previous event's hash, forming a linked chain.
-- `GET /api/v1/audit/verify` re-computes all hashes and detects any mismatch or gap.
-- Test proof: `test_audit_chain_detects_tampering`, `test_audit_chain_valid_when_untampered`
-- **Known limitation:** A sophisticated attacker with full DB access who also rewrites all subsequent hashes could evade detection. Production systems should ship events to an append-only external store (e.g., AWS CloudTrail, transparency log).
-
----
-
-## Threat 6 — Unauthenticated API Access
-
-**Attack:** An anonymous caller hits any protected API endpoint directly without a JWT.
-
-**Risk:** CRITICAL — bypasses all authentication.
-
-**Mitigation:**
-- All routes except `/api/v1/auth/login` require `get_current_user` dependency, which validates the Bearer JWT.
-- Invalid or missing token → HTTP 401 Unauthorized.
-- Test proof: `test_unauthenticated_cannot_access_documents`, `test_unauthenticated_cannot_download`
+### Threat 8 — Administrative Overreach
+- **Attack:** Administrator attempts to read confidential document contents without explicit access.
+- **Risk:** MEDIUM — violation of data isolation principles.
+- **Implemented Mitigation:** Administrator role manages users and inspects audit ledgers, but possesses zero implicit document read or download rights without explicit grants.
+- **Verification:** `test_admin_cannot_download_document_contents`.
 
 ---
 
-## Threat 7 — Malicious File Upload
+## 3. Deployment Scope & Multi-Tenancy
 
-**Attack:** An attacker uploads an executable (`.exe`, `.sh`, `.php`) or a polyglot file disguised as a PDF.
-
-**Risk:** MEDIUM — server-side code execution, stored XSS, or malware delivery.
-
-**Mitigation:**
-- `file_validator.py` checks **both file extension and magic bytes** (libmagic MIME detection).
-- Allowed types: PDF, DOCX, XLSX, CSV, TXT, PNG, JPG, GIF.
-- Files exceeding 10 MB are rejected.
-- Test proof: `test_upload_rejects_unsupported_extension`, `test_upload_rejects_oversized_file`
+> [!NOTE]
+> **Single-Tenant Deployment:** TrustVault is currently engineered for a single organization/enterprise deployment. Multi-tenancy (isolated company organizations or virtual tenant boundaries) is **not implemented** in the current database schema. All users share the same user pool and access is governed strictly by document-level and account-level roles.
 
 ---
 
-## Threat 8 — Credential Leakage via API Responses
+## 4. Remaining Risks & Recommendations
 
-**Attack:** The API accidentally returns `hashed_password` or JWT in a user or audit event response.
-
-**Risk:** HIGH — enables offline password cracking or session hijacking.
-
-**Mitigation:**
-- Pydantic `UserOut` schema explicitly excludes `hashed_password`.
-- Audit event details field is never populated with password data.
-- Test proof: `test_password_not_in_user_response`, `test_audit_events_do_not_contain_passwords`
-
----
-
-## Threat 9 — Cross-User Document Listing
-
-**Attack:** User B queries `GET /api/v1/documents/` hoping to see User A's documents.
-
-**Risk:** MEDIUM — information disclosure.
-
-**Mitigation:**
-- The listing query filters strictly by `Document.owner_id == current_user.id`.
-- Shared documents are only returned via `/documents/shared`, scoped to active permissions.
-- Test proof: `test_user_cannot_list_others_documents`
-
----
-
-## Threat 10 — Admin Overreach (Data Access Scope Creep)
-
-**Attack:** An admin user uses their elevated role to read or download document contents belonging to other users.
-
-**Risk:** MEDIUM — violates principle of least privilege; admins should manage accounts, not read files.
-
-**Mitigation:**
-- Admin role grants access to user management and audit trail only.
-- Document download enforces `is_owner OR has_active_permission` — admin role alone does not satisfy either.
-- Test proof: `test_admin_cannot_download_document_contents`
-
----
-
-## References
-- [OWASP Authorization Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Authorization_Cheat_Sheet.html)
-- [OWASP Top 10: A01 Broken Access Control](https://owasp.org/Top10/A01_2021-Broken_Access_Control/)
-- [OWASP Top 10: A02 Cryptographic Failures](https://owasp.org/Top10/A02_2021-Cryptographic_Failures/)
-- [OWASP Logging and Monitoring Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Logging_Cheat_Sheet.html)
+1. **Database-Level Cryptographic Redo:** If an attacker gains raw write access to the SQLite file, they could theoretically recalculate all hashes from the point of edit to the head. Recommendation: Mirror audit events to an external immutable, write-once-read-many (WORM) storage service (e.g. AWS S3 Object Lock, CloudTrail).
+2. **Horizontal Scaling:** Current file storage utilizes local content-addressable storage. Recommendation: For clustered deployments, configure an S3-compatible backend.

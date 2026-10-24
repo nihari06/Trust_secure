@@ -23,12 +23,52 @@ class UserCreate(BaseModel):
     email: EmailStr
     full_name: str
     password: str
-    role: UserRole = UserRole.viewer
+    confirm_password: Optional[str] = None
+    role: Optional[UserRole] = None
+
+    @validator("full_name")
+    def name_not_empty(cls, v):
+        if not v or not v.strip():
+            raise ValueError("Full name cannot be empty.")
+        return v.strip()
 
     @validator("password")
     def password_strength(cls, v):
         if len(v) < 8:
             raise ValueError("Password must be at least 8 characters.")
+        return v
+
+
+class UserRegister(BaseModel):
+    email: EmailStr
+    full_name: str
+    password: str
+    confirm_password: Optional[str] = None
+    role: Optional[str] = None
+
+    @validator("full_name")
+    def name_not_empty(cls, v):
+        if not v or not v.strip():
+            raise ValueError("Full name cannot be empty.")
+        return v.strip()
+
+    @validator("password")
+    def password_strength(cls, v):
+        if len(v) < 8:
+            raise ValueError("Password must be at least 8 characters long.")
+        return v
+
+
+class PasswordChangeRequest(BaseModel):
+    current_password: str
+    new_password: str
+    confirm_new_password: Optional[str] = None
+    confirm_password: Optional[str] = None
+
+    @validator("new_password")
+    def password_strength(cls, v):
+        if len(v) < 8:
+            raise ValueError("New password must be at least 8 characters long.")
         return v
 
 
@@ -81,9 +121,12 @@ class DocumentOut(BaseModel):
     category: Optional[str]
     owner_id: UUID
     owner_name: Optional[str] = None
+    owner_email: Optional[str] = None
     original_filename: str
     mime_type: str
     file_size: int
+    sha256_hash: Optional[str] = None
+    permissions_count: Optional[int] = 0
     created_at: datetime
     updated_at: datetime
 

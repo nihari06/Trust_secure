@@ -1,5 +1,9 @@
 import os
-from pydantic import BaseSettings, validator
+try:
+    from pydantic_settings import BaseSettings
+except ImportError:
+    from pydantic import BaseSettings  # type: ignore
+from pydantic import validator
 from typing import List
 
 _backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -13,8 +17,10 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     STORAGE_PATH: str = "./storage"
     APP_ENV: str = "development"
-    ALLOWED_ORIGINS: str = "http://localhost:3000"
-    ALLOW_PUBLIC_REGISTRATION: bool = False
+    ALLOWED_ORIGINS: str = "http://localhost:3000,http://127.0.0.1:3000,http://localhost:5000,http://127.0.0.1:5000"
+    ALLOW_PUBLIC_REGISTRATION: bool = True
+    PORT: int = 5000
+    HOST: str = "127.0.0.1"
 
     @validator("DATABASE_URL", pre=True, always=True)
     def normalize_db_url(cls, v):

@@ -1,17 +1,19 @@
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, UploadFile, File, status
 from sqlalchemy.orm import Session
 from typing import Optional
 from datetime import datetime, timezone
+import os
+import uuid
 from app.db.session import get_db
 from app.db.models import User, UserRole, AuditOutcome, Document, DocumentPermission
 from app.core.deps import get_current_user, require_admin
-from app.core.security import get_password_hash
+from app.core.security import get_password_hash, verify_password, create_access_token
+from app.core.config import settings
 from app.schemas.schemas import (
     UserOut, UserCreate, UserUpdate, UserLookupOut, UserLookupResponse,
-    OffboardRequest, OffboardResponse
+    OffboardRequest, OffboardResponse, PasswordChangeRequest
 )
 from app.services import audit
-import uuid
 
 router = APIRouter(prefix="/users", tags=["Users"])
 
@@ -370,3 +372,136 @@ def offboard_user(
         transferred_documents_count=transferred_count,
         details=f"Successfully offboarded {target_user.email}. {revoked_count} permissions revoked, {transferred_count} documents transferred, sessions invalidated.",
     )
+
+
+@router.post("/me/password")
+def change_password(
+    body: PasswordChangeRequest,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Secure password change verifying current password and invalidating prior sessions."""
+    if not verify_password(body.current_password, current_user.hashed_password):
+        audit.record_from_request(
+            db, request,
+            action="PASSWORD_CHANGE_FAILED",
+            outcome=AuditOutcome.failure,
+            actor=current_user,
+            details="Incorrect current password provided.",
+        )
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Current password is incorrect.",
+        )
+
+    confirm_val = body.confirm_new_password or body.confirm_password
+    if not confirm_val or body.new_password != confirm_val:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="New password and confirmation do not match.",
+        )
+
+    if body.current_password == body.new_password:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="New password must be different from current password.",
+        )
+
+    # Hash new password securely
+    current_user.hashed_password = get_password_hash(body.new_password)
+    # Invalidate other active sessions by bumping token_version
+    current_user.token_version = (current_user.token_version or 1) + 1
+    db.commit()
+    db.refresh(current_user)
+
+    # Issue a new valid token for current session
+    new_token = create_access_token({"sub": str(current_user.id), "ver": current_user.token_version})
+
+    audit.record_from_request(
+        db, request,
+        action="PASSWORD_CHANGED",
+        outcome=AuditOutcome.success,
+        actor=current_user,
+        details="Password changed successfully. Token version bumped.",
+    )
+
+    return {
+        "detail": "Password changed successfully.",
+        "access_token": new_token,
+    }
+
+
+@router.post("/me/avatar")
+async def upload_avatar(
+    request: Request,
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Upload user avatar image with content and size validation."""
+    ALLOWED_IMAGE_TYPES = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp", "image/gif": ".gif"}
+    MAX_SIZE = 2 * 1024 * 1024  # 2MB
+
+    content = await file.read()
+    if len(content) > MAX_SIZE:
+        raise HTTPException(status_code=400, detail="Avatar file too large. Maximum size is 2MB.")
+
+    # Validate MIME type
+    detected_mime = file.content_type
+    ext = ALLOWED_IMAGE_TYPES.get(detected_mime)
+    if not ext:
+        if content.startswith(b"\xff\xd8\xff"):
+            detected_mime, ext = "image/jpeg", ".jpg"
+        elif content.startswith(b"\x89PNG\r\n\x1a\n"):
+            detected_mime, ext = "image/png", ".png"
+        elif content.startswith(b"GIF87a") or content.startswith(b"GIF89a"):
+            detected_mime, ext = "image/gif", ".gif"
+        elif content.startswith(b"RIFF") and b"WEBP" in content[:16]:
+            detected_mime, ext = "image/webp", ".webp"
+        else:
+            raise HTTPException(status_code=400, detail="Unsupported image format. Allowed: JPG, PNG, WEBP, GIF.")
+
+    avatar_dir = os.path.join(settings.STORAGE_PATH, "avatars")
+    os.makedirs(avatar_dir, exist_ok=True)
+    filename = f"avatar_{current_user.id}_{uuid.uuid4().hex[:8]}{ext}"
+    file_path = os.path.join(avatar_dir, filename)
+
+    with open(file_path, "wb") as f:
+        f.write(content)
+
+    audit.record_from_request(
+        db, request,
+        action="AVATAR_UPDATED",
+        outcome=AuditOutcome.success,
+        actor=current_user,
+        details=f"Avatar image updated ({len(content)} bytes).",
+    )
+
+    return {
+        "detail": "Avatar uploaded successfully.",
+        "avatar_url": f"/api/v1/users/{current_user.id}/avatar",
+    }
+
+
+@router.get("/{user_id}/avatar")
+def get_avatar(user_id: str, db: Session = Depends(get_db)):
+    """Serve user avatar image securely."""
+    try:
+        uid = uuid.UUID(user_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="User not found.")
+
+    avatar_dir = os.path.join(settings.STORAGE_PATH, "avatars")
+    if os.path.exists(avatar_dir):
+        # Pick latest avatar for user
+        matching = [f for f in os.listdir(avatar_dir) if f.startswith(f"avatar_{uid}_")]
+        if matching:
+            matching.sort(reverse=True)
+            file_path = os.path.join(avatar_dir, matching[0])
+            ext = os.path.splitext(matching[0])[1].lower()
+            mime = "image/jpeg" if ext in (".jpg", ".jpeg") else "image/png" if ext == ".png" else "image/webp" if ext == ".webp" else "image/gif"
+            with open(file_path, "rb") as af:
+                data = af.read()
+            return Response(content=data, media_type=mime)
+    raise HTTPException(status_code=404, detail="Avatar not found.")

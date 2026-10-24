@@ -91,7 +91,7 @@ def verify_audit_chain(
 def my_audit_events(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
     """Users can see their own audit events only."""

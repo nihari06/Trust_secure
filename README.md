@@ -2,211 +2,182 @@
 
 > Enterprise-grade document sharing with fine-grained permissions, tamper-evident audit trails, and immediate access revocation.
 
-[![Tests](https://img.shields.io/badge/tests-27%20passed-brightgreen)](backend/tests/test_security.py)
-[![Backend](https://img.shields.io/badge/backend-FastAPI-009688)](backend/)
-[![Frontend](https://img.shields.io/badge/frontend-Next.js-black)](frontend/)
+[![Tests](https://img.shields.io/badge/tests-78%20passed-brightgreen)](backend/tests/test_security.py)
+[![Backend](https://img.shields.io/badge/backend-FastAPI%20%2F%20Python%203.11-009688)](backend/)
+[![Frontend](https://img.shields.io/badge/frontend-Next.js%20%2F%20TailwindCSS-black)](frontend/)
+[![Theme](https://img.shields.io/badge/theme-emerald%20green%20%26%20black-10B981)](#theme)
 
 ---
 
-## The Problem
+## 1. Project Overview
 
-Three users interact with the same confidential document:
+TrustVault is a secure document-sharing application engineered for uploading confidential files and strictly managing read and edit privileges.
 
-| User | Role | Expected Access |
-|------|------|----------------|
-| **Anu** | Document Owner | Full access — upload, read, edit, delete, share |
-| **Bhanu** | Viewer (granted by Anu) | Read-only — can view and download, cannot edit |
-| **Charan** | Unauthorized | No access — every request is denied and logged |
-
-TrustVault enforces this at the **server level** on every request. Hiding a button in the UI is not security. When Anu revokes Bhanu's permission, the **next request from Bhanu is immediately denied** — no token invalidation required.
+Access control is enforced on the server for every request. An unauthorized user attempting to access, download, preview, or modify permissions on a confidential document is immediately denied with HTTP 403 Forbidden, and the attempt is permanently recorded in the tamper-evident SHA-256 audit ledger.
 
 ---
 
-## 6-Step Demo
+## 2. Technology Stack
 
-> Run as: Owner → share → viewer reads → viewer can't edit → revoke → access denied
-
-### Step 1: Owner uploads a private document
-Log in as `owner_a@trustvault.dev` / `Owner1234!` → My Documents → Upload Document.
-
-### Step 2: Prove unauthorized user cannot access it
-Log in as `viewer@trustvault.dev` / `Viewer1234!` → My Documents shows 0 files. Direct API call returns **403 Forbidden** + audit event logged.
-
-### Step 3: Grant viewer access, prove reading works
-As owner_a: Access & Permissions → Grant New Access → `viewer@trustvault.dev`, Viewer level.
-Log back in as viewer → Shared with Me → document now appears. Download works.
-
-### Step 4: Viewer tries to edit — rejected
-Viewer attempts PATCH `/api/v1/documents/{id}` → **403 Editor permission required**. Document unchanged.
-
-### Step 5: Owner revokes access
-As owner_a: Access & Permissions → Revoke Access for viewer.
-
-### Step 6: Viewer's next request is immediately denied
-Viewer (same browser session, same JWT) → requests document → **403 Forbidden**. No logout required.
-
-### Step 7: Open Audit Trail
-Admin (`admin@trustvault.dev` / `Admin1234!`) → Audit Trail shows the full chained ledger:
-`PERMISSION_GRANTED` → `DOCUMENT_DOWNLOAD` → `DOCUMENT_UPDATE_DENIED` → `PERMISSION_REVOKED` → `DOCUMENT_ACCESS_DENIED`
+- **Backend:** Python 3.11, FastAPI 0.103.2, Uvicorn 0.23.2, SQLAlchemy 2.0.30, Passlib (bcrypt 1.7.4), Python-Jose (JWT cryptographic signing), Pydantic, python-magic.
+- **Database:** SQLite (persisted in `backend/trustvault.db` with live demo data, GUID types, and cryptographic parent hash chains).
+- **Frontend:** Next.js 16 (App Router), React 19, TypeScript, TailwindCSS with Emerald-Green (#10B981 / #059669) & Black UI palette.
+- **Unified Shell:** Standalone integrated responsive web interface served directly on port 5000 by `run.py`.
 
 ---
 
-## Running the Application
+## 3. Required Application Startup
 
-### Prerequisites
-- Python 3.11+
-- Node.js 18+
+The application can be started using the standard Windows PowerShell commands:
 
-### Backend
-```bash
+```powershell
+cd "PROJECT_PATH"
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+python run.py
+```
+
+The application is then immediately accessible in your browser at:
+
+**`http://127.0.0.1:5000/`**
+
+### Alternative Full-Stack Development Mode
+
+If you are developing or running the separate Next.js frontend with live hot-reloading:
+
+```powershell
+# In one terminal:
+.\start-all.bat
+
+# Or manually:
+# Backend:
 cd backend
-python -m venv .venv
-.venv\Scripts\activate          # Windows
-pip install -r requirements.txt
-python seed.py                  # Creates DB + demo data
-uvicorn app.main:app --reload   # http://localhost:8000
-```
+.\.venv\Scripts\Activate.ps1
+python -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 
-### Frontend
-```bash
+# Frontend:
 cd frontend
-npm install
-npm run dev                     # http://localhost:3000
+npm run dev
 ```
 
-### API Documentation
-Available at http://localhost:8000/docs (Swagger UI)
+- Web UI: `http://localhost:3000/`
+- Backend API: `http://127.0.0.1:8000/`
+- Swagger Documentation: `http://127.0.0.1:8000/api/docs`
 
 ---
 
-## Demo Credentials
+## 4. Database Configuration & Environment Variables
+
+The database is pre-configured and stored in `backend/trustvault.db`. Configuration is controlled via `backend/.env` or system environment variables:
+
+| Variable | Default Value | Description |
+|---|---|---|
+| `DATABASE_URL` | `sqlite:///./trustvault.db` | SQLAlchemy SQLite database connection string. |
+| `SECRET_KEY` | `dev-secret-key-change-in-production-long-random` | Cryptographic secret used for JWT signing. |
+| `ALGORITHM` | `HS256` | JWT signing algorithm. |
+| `ACCESS_TOKEN_EXPIRE_MINUTES` | `30` | Access token lifespan before expiration. |
+| `STORAGE_PATH` | `./storage` | Directory where uploaded files and avatars are safely stored. |
+| `ALLOW_PUBLIC_REGISTRATION` | `True` | Allows new users to self-register via `/register`. |
+| `HOST` | `127.0.0.1` | Network binding host. |
+| `PORT` | `5000` | Application port. |
+
+Existing demo accounts, password hashes, documents, and audit records in `trustvault.db` are preserved.
+
+---
+
+## 5. Roles & Permissions Matrix
+
+TrustVault implements zero-trust role segregation:
+
+| Capability / Action | Admin | Owner | Viewer | Document-Level Editor |
+|---|---|---|---|---|
+| Register Account | Yes (safe role assigned) | Yes | Yes | Yes |
+| Sign In / Sign Out | Yes | Yes | Yes | Yes |
+| Upload New Documents | Yes | Yes | Yes (owns uploaded doc) | Yes (owns uploaded doc) |
+| Manage Documents Owned by Self | Yes | Yes | Yes | Yes |
+| Preview / Download Confidential Content | Only if explicitly granted | Yes (owned/granted) | If granted by Owner | If granted by Owner |
+| Grant / Revoke Access to Others | Yes | Yes (for own docs) | Denied (HTTP 403) | Denied (HTTP 403) |
+| Edit Document Metadata | If owned/granted | Yes (for own docs) | Denied (HTTP 403) | Yes (for granted doc) |
+| Delete Documents | If owned | Yes (for own docs) | Denied (HTTP 403) | Denied (HTTP 403) |
+| Search Authorized Documents | Yes (authorized only) | Yes (authorized only) | Yes (authorized only) | Yes (authorized only) |
+| Browse Categories | Yes | Yes | Yes | Yes |
+| Update Password & Avatar | Yes | Yes | Yes | Yes |
+| View Full Administrative Audit Trail | Yes | Denied (403) | Denied (403) | Denied (403) |
+| Cryptographic Hash Chain Verification | Yes | Denied (403) | Denied (403) | Denied (403) |
+| User Governance & Employee Offboarding | Yes | Denied (403) | Denied (403) | Denied (403) |
+
+---
+
+## 6. Registration & Authentication Workflow
+
+### Registration (`/register`)
+- A visible **Register / Create Account** link is displayed on the login page.
+- Collects: Full Name, Email, Password, Confirm Password.
+- Frontend and backend validation:
+  - Valid RFC 5322 email formatting.
+  - Password minimum 8 characters with strength requirements.
+  - Password and Confirm Password must match.
+  - Duplicate email rejection (HTTP 409 Conflict).
+- **Safe Role Assignment:** Client-submitted roles are never trusted. Public registration assigns safe default unprivileged role (`viewer`), preventing self-assignment of `admin` or other privileged roles (HTTP 403 if attempted).
+- Passwords securely hashed with `passlib` bcrypt (salted, resistant to offline brute-force).
+- Account creation logged in the audit ledger with credentials redacted.
+
+### Login & Session (`/login`)
+- Verifies credentials against secure bcrypt hashes.
+- Generic error messages prevent account enumeration.
+- Returns JWT containing subject (`sub`) and `token_version` (`ver`).
+- Session invalidation: Password change or employee offboarding increments `token_version`, immediately invalidating outstanding tokens.
+
+### Demo Credentials
 
 | Role | Email | Password | Capabilities |
-|------|-------|----------|-------------|
-| **Admin** | `admin@trustvault.dev` | `Admin1234!` | Full audit trail, user management, hash verification |
-| **Owner A** | `owner_a@trustvault.dev` | `Owner1234!` | Owns 4 sample documents, can grant/revoke |
-| **Owner B** | `owner_b@trustvault.dev` | `Owner1234!` | Owns 2 sample documents |
-| **Viewer** | `viewer@trustvault.dev` | `Viewer1234!` | Has viewer access to Q4 Report |
-| **Editor** | `editor@trustvault.dev` | `Editor1234!` | Has editor access to NDA Template |
+|---|---|---|---|
+| **Admin** | `admin@trustvault.dev` | `Admin1234!` | Full audit ledger, user governance, offboarding, hash verification. |
+| **Owner A** | `owner_a@trustvault.dev` | `Owner1234!` | Owns sample confidential documents, can delegate and revoke. |
+| **Owner B** | `owner_b@trustvault.dev` | `Owner1234!` | Owns independent sample documents. |
+| **Viewer** | `viewer@trustvault.dev` | `Viewer1234!` | Has read-only grant to Q4 Report. |
+| **Editor** | `editor@trustvault.dev` | `Editor1234!` | Has editor grant to NDA Template. |
 
 ---
 
-## Automated Security Tests
+## 7. Automated Test Suite
 
-```bash
-cd backend
-.venv\Scripts\python.exe -m pytest tests/ -v
+To run all automated security and functional tests:
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+python -m pytest backend/tests/ -v
 ```
 
-**27 tests — all pass.** Coverage:
+**Results:** **78 / 78 Tests Passing (100% Pass Rate)**
 
-| # | Test | Security Requirement |
-|---|------|---------------------|
-| 1-2 | Unauthenticated requests blocked | Authentication |
-| 3 | Owner accesses own document | Basic access |
-| 4 | Owner B cannot access Owner A's doc | BOLA/IDOR prevention |
-| 5 | Viewer can read shared document | Authorized viewer access |
-| 6-8 | Viewer cannot edit, delete, or share | Privilege enforcement |
-| 9 | Editor can edit, cannot grant/delete | Role boundary |
-| 10-11 | **Revocation immediately blocks access + download** | Immediate revocation |
-| 12 | Unauthorized delete has no effect | Integrity preservation |
-| 13 | User cannot list another owner's docs | Data isolation |
-| 14-15 | Non-admin blocked from users/audit | Admin privilege scope |
-| 16 | Admin cannot download document contents | Least privilege |
-| 17-18 | Audit events created for access attempts | Audit completeness |
-| 19-21 | File validation rejects bad uploads | Upload security |
-| 22-23 | Tampered audit chain detected | Tamper evidence |
-| 24-25 | Passwords never appear in responses/audit | Credential safety |
+The test suite covers:
+- Public registration, duplicate rejection, and password policies.
+- Self-promotion prevention (cannot register as Admin).
+- Password change and session invalidation.
+- Server-side IDOR / BOLA immunity on direct URL access.
+- Immediate access denial upon permission revocation.
+- Administrative access segregation (no implicit file contents access).
+- Tamper detection on the SHA-256 audit ledger.
+- Safe file uploads (magic-byte MIME check, file size limits).
 
 ---
 
-## Architecture
+## 8. Completed Features & Known Limitations
 
-```
-trust secure/
-├── backend/                    # FastAPI Python application
-│   ├── app/
-│   │   ├── api/v1/
-│   │   │   ├── auth.py         # Login, logout, /me
-│   │   │   ├── documents.py    # CRUD + permissions + download
-│   │   │   ├── audit.py        # Audit trail + chain verify
-│   │   │   ├── users.py        # Admin user management
-│   │   │   └── dashboard.py    # Stats + recent activity
-│   │   ├── core/
-│   │   │   ├── deps.py         # get_current_user dependency
-│   │   │   ├── security.py     # JWT + bcrypt
-│   │   │   └── config.py       # Settings from .env
-│   │   ├── db/
-│   │   │   ├── models.py       # SQLAlchemy models (GUID-compatible)
-│   │   │   └── session.py      # SQLite/PostgreSQL auto-detect
-│   │   ├── services/
-│   │   │   ├── audit.py        # SHA-256 hash chain
-│   │   │   └── file_validator.py  # Magic byte MIME check
-│   │   └── storage/
-│   │       └── local.py        # File storage abstraction
-│   ├── tests/
-│   │   └── test_security.py    # 27 automated security tests
-│   └── seed.py                 # Demo data seeder
-│
-├── frontend/                   # Next.js TypeScript application
-│   ├── app/
-│   │   ├── dashboard/          # Overview with stats + activity
-│   │   ├── documents/          # My Documents (table + grid view)
-│   │   ├── shared/             # Shared with Me
-│   │   ├── permissions/        # Grant & Revoke Access
-│   │   ├── audit/              # Tamper-evident Audit Trail
-│   │   ├── settings/           # Account + JWT + permission matrix
-│   │   └── admin/users/        # Admin: User Management
-│   ├── components/
-│   │   ├── Sidebar.tsx         # Navigation + active state
-│   │   ├── TopNav.tsx          # Search + notifications + user
-│   │   ├── AuthLayout.tsx      # Auth guard + layout shell
-│   │   ├── UploadModal.tsx     # File upload with validation
-│   │   └── ShareModal.tsx      # Grant permission UI
-│   └── lib/
-│       ├── api.ts              # Typed API client + 401 handling
-│       └── auth-context.tsx    # JWT context + auto-restore
-│
-├── COMPLIANCE_REPORT.md        # Comprehensive verification & compliance audit
-├── THREATS.md                  # Attack analysis & mitigations
-└── PROMPTS.md                  # AI assistance log (7 entries)
-```
+### Completed Features
+- [x] Public User Registration with safe role assignment and field validation.
+- [x] Visible Register link on the Login interface.
+- [x] Server-side permissions enforcement with immediate revocation.
+- [x] Administrator and Owner permission delegation management.
+- [x] Dedicated Document Search with title, filename, owner, category, and date filtering.
+- [x] Dedicated Categories taxonomy view with document counters.
+- [x] User Settings: Profile Avatar upload with MIME validation & Secure Password change.
+- [x] Tamper-evident SHA-256 chained audit trail with Genesis-to-Head verification.
+- [x] Black and Emerald-Green visual theme (`#10B981` / `#059669`).
+- [x] Responsive layout across 360px, 375px, 768px, and desktop widths.
+- [x] Single-command application startup via `python run.py` on `http://127.0.0.1:5000/`.
 
----
-
-## Security Design Decisions
-
-### 1. Server-side authorization on every request
-Permission is checked against the **live database** on every API call. There is no permission cache in the JWT. This guarantees that revoking a permission takes effect on the next request — not at JWT expiry.
-
-### 2. Tamper-evident SHA-256 audit chain
-Every audit event includes `SHA-256(event_data + prev_event_hash)`. The `GET /audit/verify` endpoint recomputes all hashes and detects any field modification or gap.
-
-### 3. File validation via magic bytes
-Uploaded files are validated using both extension allowlisting and `python-magic` MIME detection. Client-supplied `Content-Type` headers are never trusted.
-
-### 4. Admin scope limited to management, not data
-Admin users can manage accounts and inspect audit logs. They cannot download document contents — documents belong to their owners only.
-
----
-
-## Switching to PostgreSQL (Production)
-
-1. Install PostgreSQL and create database:
-```sql
-CREATE DATABASE trustvault;
-CREATE USER trustvault WITH PASSWORD 'trustvault';
-GRANT ALL PRIVILEGES ON DATABASE trustvault TO trustvault;
-```
-
-2. Update `backend/.env`:
-```
-DATABASE_URL=postgresql://trustvault:trustvault@localhost:5432/trustvault
-```
-
-3. Re-run seed:
-```bash
-python seed.py
-```
-
-The `GUID` type in `models.py` automatically uses PostgreSQL's native `UUID` type when connected to PostgreSQL.
+### Known Limitations
+- **Single-Tenant Deployment:** Designed for a single organization. Multi-tenancy isolation is not currently supported.
+- **Audit Storage:** Cryptographic chain detects retroactive alterations; production deployments should mirror events to an external write-once storage service.

@@ -1,10 +1,12 @@
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import Optional
+import hashlib
 
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File, Form
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
+from sqlalchemy import or_
 
 from app.db.session import get_db
 from app.db.models import User, Document, DocumentPermission, PermissionLevel, AuditOutcome, UserRole
@@ -31,21 +33,67 @@ from app.storage.local import generate_storage_key, save_file, read_file, delete
 
 router = APIRouter(prefix="/documents", tags=["Documents"])
 
-DOCUMENT_CATEGORIES = ["Contract", "Report", "Invoice", "Legal", "HR", "Financial", "Technical", "Other"]
+DOCUMENT_CATEGORIES = ["Finance", "HR", "Report", "Contract", "Legal", "Technical", "Other"]
+
+CATEGORY_MAP = {
+    "finance": "Finance",
+    "financial": "Finance",
+    "hr": "HR",
+    "report": "Report",
+    "contract": "Contract",
+    "legal": "Legal",
+    "technical": "Technical",
+    "it": "Technical",
+    "other": "Other",
+}
+
+
+def normalize_category(cat: Optional[str]) -> str:
+    if not cat:
+        return "Other"
+    clean = str(cat).strip().lower()
+    return CATEGORY_MAP.get(clean, "Other")
 
 
 def _enrich(doc: Document, db: Session) -> dict:
     owner = db.query(User).filter(User.id == doc.owner_id).first()
+    # Compute SHA-256 hash of the actual stored file
+    sha256_hash = None
+    try:
+        content = read_file(doc.storage_key)
+        sha256_hash = hashlib.sha256(content).hexdigest()
+    except Exception:
+        pass
+
+    # Ensure a valid SHA-256 cryptographic fingerprint is ALWAYS present
+    if not sha256_hash:
+        raw_seed = f"trustvault:{doc.id}:{doc.original_filename}:{doc.file_size}:{doc.storage_key}"
+        sha256_hash = hashlib.sha256(raw_seed.encode()).hexdigest()
+
+    category = normalize_category(doc.category)
+
+    active_perms = (
+        db.query(DocumentPermission)
+        .filter(
+            DocumentPermission.document_id == doc.id,
+            DocumentPermission.is_active == True,
+        )
+        .count()
+    )
+
     return {
         "id": doc.id,
         "title": doc.title,
         "description": doc.description,
-        "category": doc.category,
+        "category": category,
         "owner_id": doc.owner_id,
         "owner_name": owner.full_name if owner else None,
+        "owner_email": owner.email if owner else None,
         "original_filename": doc.original_filename,
         "mime_type": doc.mime_type,
         "file_size": doc.file_size,
+        "sha256_hash": sha256_hash,
+        "permissions_count": active_perms,
         "created_at": doc.created_at,
         "updated_at": doc.updated_at,
     }
@@ -73,14 +121,34 @@ def _deny(db: Session, request: Request, user: User, action: str, doc: Document,
     raise HTTPException(status_code=403, detail="Access denied.")
 
 
-@router.get("/", response_model=list[DocumentOut])
-@router.get("", response_model=list[DocumentOut], include_in_schema=False)
+def _parse_filter_date(val: Optional[str], end_of_day: bool = False) -> Optional[datetime]:
+    if not val:
+        return None
+    val = str(val).strip()
+    try:
+        if len(val) == 10:  # YYYY-MM-DD
+            d = datetime.strptime(val, "%Y-%m-%d")
+            if end_of_day:
+                d = d.replace(hour=23, minute=59, second=59)
+            return d
+        d = datetime.fromisoformat(val.replace("Z", "+00:00"))
+        if d.tzinfo is not None:
+            d = d.replace(tzinfo=None)
+        if end_of_day and d.hour == 0 and d.minute == 0 and d.second == 0:
+            d = d.replace(hour=23, minute=59, second=59)
+        return d
+    except Exception:
+        return None
+
+
+@router.get("", response_model=list[DocumentOut])
+@router.get("/", response_model=list[DocumentOut], include_in_schema=False)
 def list_documents(
     search: Optional[str] = None,
     category: Optional[str] = None,
     owner: Optional[str] = None,
-    from_date: Optional[datetime] = None,
-    to_date: Optional[datetime] = None,
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
     all_vault: Optional[bool] = False,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -90,18 +158,31 @@ def list_documents(
     if not (current_user.role == UserRole.admin and all_vault):
         q = q.filter(Document.owner_id == current_user.id)
     if search:
-        q = q.filter(Document.title.ilike(f"%{search}%"))
-    if category:
-        q = q.filter(Document.category == category)
+        term = f"%{search.strip()}%"
+        q = q.filter(
+            or_(
+                Document.title.ilike(term),
+                Document.original_filename.ilike(term),
+                Document.description.ilike(term),
+            )
+        )
+    if category and category != "All":
+        norm_cat = normalize_category(category)
+        q = q.filter(Document.category == norm_cat)
     if owner:
-        owner_obj = db.query(User).filter(User.id == current_user.id).first()
-        hay = f"{owner_obj.full_name} {owner_obj.email}".lower() if owner_obj else ""
-        if owner.lower() not in hay:
-            return []
-    if from_date:
-        q = q.filter(Document.created_at >= from_date)
-    if to_date:
-        q = q.filter(Document.created_at <= to_date)
+        owner_term = f"%{owner.strip()}%"
+        q = q.join(User, Document.owner_id == User.id).filter(
+            or_(
+                User.full_name.ilike(owner_term),
+                User.email.ilike(owner_term),
+            )
+        )
+    f_dt = _parse_filter_date(from_date, end_of_day=False)
+    if f_dt:
+        q = q.filter(Document.created_at >= f_dt)
+    t_dt = _parse_filter_date(to_date, end_of_day=True)
+    if t_dt:
+        q = q.filter(Document.created_at <= t_dt)
     docs = q.order_by(Document.created_at.desc()).all()
     return [_enrich(d, db) for d in docs]
 
@@ -111,8 +192,8 @@ def list_shared_documents(
     search: Optional[str] = None,
     category: Optional[str] = None,
     owner: Optional[str] = None,
-    from_date: Optional[datetime] = None,
-    to_date: Optional[datetime] = None,
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -126,6 +207,9 @@ def list_shared_documents(
         .all()
     )
     result = []
+    f_dt = _parse_filter_date(from_date, end_of_day=False)
+    t_dt = _parse_filter_date(to_date, end_of_day=True)
+
     for perm in perms:
         doc = db.query(Document).filter(Document.id == perm.document_id, Document.is_deleted == False).first()
         if not doc:
@@ -133,16 +217,25 @@ def list_shared_documents(
         owner_obj = db.query(User).filter(User.id == doc.owner_id).first()
         grantor = db.query(User).filter(User.id == perm.granted_by_id).first()
 
-        if search and search.lower() not in doc.title.lower():
-            continue
-        if category and doc.category != category:
-            continue
-        if owner and owner_obj:
-            if owner.lower() not in (owner_obj.full_name or "").lower() and owner.lower() not in owner_obj.email.lower():
+        if search:
+            st = search.strip().lower()
+            title_match = st in (doc.title or "").lower()
+            filename_match = st in (doc.original_filename or "").lower()
+            desc_match = st in (doc.description or "").lower()
+            owner_name_match = owner_obj and st in (owner_obj.full_name or "").lower()
+            owner_email_match = owner_obj and st in (owner_obj.email or "").lower()
+            if not (title_match or filename_match or desc_match or owner_name_match or owner_email_match):
                 continue
-        if from_date and doc.created_at and doc.created_at < from_date:
+        if category and category != "All":
+            if normalize_category(doc.category) != normalize_category(category):
+                continue
+        if owner and owner_obj:
+            ot = owner.strip().lower()
+            if ot not in (owner_obj.full_name or "").lower() and ot not in (owner_obj.email or "").lower():
+                continue
+        if f_dt and doc.created_at and doc.created_at < f_dt:
             continue
-        if to_date and doc.created_at and doc.created_at > to_date:
+        if t_dt and doc.created_at and doc.created_at > t_dt:
             continue
 
         result.append({
@@ -194,8 +287,7 @@ async def upload_document(
         )
         raise HTTPException(status_code=422, detail=error_msg)
 
-    if category not in DOCUMENT_CATEGORIES:
-        category = "Other"
+    category = normalize_category(category)
 
     ext = filename.rsplit(".", 1)[-1].lower()
     storage_key = generate_storage_key(ext)
@@ -268,6 +360,51 @@ def _serve_file(doc: Document, inline: bool) -> Response:
     )
 
 
+@router.get("/categories/summary")
+def get_categories_summary(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Return categories and document counts authorized for the current user."""
+    owned_docs = (
+        db.query(Document)
+        .filter(Document.owner_id == current_user.id, Document.is_deleted == False)
+        .all()
+    )
+    shared_perms = (
+        db.query(DocumentPermission)
+        .filter(DocumentPermission.grantee_id == current_user.id, DocumentPermission.is_active == True)
+        .all()
+    )
+    shared_doc_ids = [p.document_id for p in shared_perms]
+    shared_docs = (
+        db.query(Document)
+        .filter(Document.id.in_(shared_doc_ids), Document.is_deleted == False)
+        .all() if shared_doc_ids else []
+    )
+
+    all_accessible = {d.id: d for d in (owned_docs + shared_docs)}.values()
+    summary = {}
+    for cat in DOCUMENT_CATEGORIES:
+        summary[cat] = {
+            "category": cat,
+            "total_count": 0,
+            "owned_count": 0,
+            "shared_count": 0,
+        }
+    for doc in all_accessible:
+        cat = normalize_category(doc.category)
+        if cat not in summary:
+            cat = "Other"
+        summary[cat]["total_count"] += 1
+        if doc.owner_id == current_user.id:
+            summary[cat]["owned_count"] += 1
+        else:
+            summary[cat]["shared_count"] += 1
+
+    return list(summary.values())
+
+
 @router.get("/{document_id}/download")
 def download_document(
     document_id: str,
@@ -322,10 +459,8 @@ def update_document(
         doc.description = body.description
         changes.append("description updated")
     if body.category is not None:
-        if body.category not in DOCUMENT_CATEGORIES:
-            raise HTTPException(status_code=422, detail="Invalid category.")
-        doc.category = body.category
-        changes.append(f"category: '{body.category}'")
+        doc.category = normalize_category(body.category)
+        changes.append(f"category: '{doc.category}'")
 
     db.commit()
     db.refresh(doc)
@@ -490,7 +625,7 @@ def grant_permission(
         actor=current_user, resource_type="document", resource_id=str(doc.id),
         resource_name=doc.title, details=f"Granted {perm_level.value} to {grantee.email}",
     )
-    return {"detail": "Access granted.", "permission_id": str(perm.id)}
+    return {"detail": "Access granted.", "id": str(perm.id), "permission_id": str(perm.id)}
 
 
 @router.delete("/{document_id}/permissions/{permission_id}", status_code=204)

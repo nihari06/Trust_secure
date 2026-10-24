@@ -1,0 +1,8 @@
+# Pyrefly configuration for TrustVault
+# https://pyrefly.org/configuration
+
+# Tell Pyrefly to find 'app.*' imports inside the 'backend' directory
+search-path = ["backend"]
+
+# Use the project virtual environment for type stubs and site-packages
+python-interpreter-path = ".venv/Scripts/python.exe"

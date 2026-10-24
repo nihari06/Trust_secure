@@ -100,3 +100,29 @@ AI explained that database-per-request permission checks ARE sufficient for imme
 
 **How I used it:**
 Used this explanation to write the test comment in `test_revocation_blocks_subsequent_access` and the THREATS.md entry for Threat 2, clearly documenting why the design choice is correct.
+
+---
+
+## Entry 8 — 2026-10-23 | Company Registration & Role Assignment Remediation
+
+**Prompt used:**
+> "Inspect the existing TrustVault project and correct it according to the company problem statement. The current login screen displays an administrator-managed account message and does not provide a visible registration option. Enable public user registration with safe default role assignment, validate all fields on frontend and backend, prevent self-assigning Admin, record account creation in the audit trail, and allow new users to upload and manage their documents."
+
+**What was generated:**
+AI identified that `ALLOW_PUBLIC_REGISTRATION=False` had disabled public registration. It generated the updated `POST /api/v1/auth/register` endpoint with password strength validation, mismatch check, duplicate check, and self-promotion rejection. It also created the `/register` page and added the "Register / Create Account" link on `/login`.
+
+**How I used it:**
+Updated `backend/app/api/v1/auth.py`, `backend/app/schemas/schemas.py`, and `frontend/app/register/page.tsx`. Added `test_registration_validation_and_duplicate_rejection` to `backend/tests/test_security.py` and confirmed passing status.
+
+---
+
+## Entry 9 — 2026-10-23 | Password Change, Avatar Upload, and Single-Command Startup
+
+**Prompt used:**
+> "Implement password change with session invalidation, user avatar uploads with MIME validation, categories taxonomy overview, dedicated search page with combined filters, and the required single-command startup via `python run.py` binding to `http://127.0.0.1:5000/` with emerald-green theme (#10b981 / #059669)."
+
+**What was generated:**
+AI implemented `POST /api/v1/users/me/password` (which increments `token_version` to invalidate other sessions), `POST /api/v1/users/me/avatar` (validating image magic bytes and max 2MB), `GET /api/v1/documents/categories/summary`, dedicated `/search` and `/categories` pages, and `run.py` supporting port 5000 with a fallback web UI shell and Next.js reverse-proxy.
+
+**How I used it:**
+Integrated into backend API routes, frontend components, and root entrypoint. Verified with 78 passing security tests and direct HTTP requests.

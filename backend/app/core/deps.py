@@ -135,9 +135,9 @@ def can(
     if action in ("view_audit_trail", "verify_audit_chain", "audit_stats", "audit_actions"):
         return user.role == UserRole.admin
 
-    # 3. Document upload (only Owners and Administrators can upload new documents)
+    # 3. Document upload (active users can upload documents they own)
     if action == "document_upload":
-        return user.role in (UserRole.owner, UserRole.admin)
+        return bool(user.is_active)
 
     # 4. Document-level actions require document object
     if document is None:
@@ -151,7 +151,7 @@ def can(
         return is_owner
 
     if action in ("manage_permissions", "grant_permission", "revoke_permission", "update_permission"):
-        return is_owner
+        return is_owner or (user.role == UserRole.admin)
 
     # Ownership transfer allowed for document owner or system admin
     if action == "transfer_ownership":
