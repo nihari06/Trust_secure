@@ -17,7 +17,8 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     STORAGE_PATH: str = "./storage"
     APP_ENV: str = "development"
-    ALLOWED_ORIGINS: str = "http://localhost:3000,http://127.0.0.1:3000,http://localhost:5000,http://127.0.0.1:5000,https://trust-secure.vercel.app,https://trust-secure-lqjd2rjh4-nihas-projects-a495c765.vercel.app"    ALLOW_PUBLIC_REGISTRATION: bool = True
+    ALLOWED_ORIGINS: str = "http://localhost:3000,http://127.0.0.1:3000,http://localhost:5000,http://127.0.0.1:5000,https://trust-secure.vercel.app,https://trust-secure-lqjd2rjh4-nihas-projects-a495c765.vercel.app"    
+    ALLOW_PUBLIC_REGISTRATION: bool = True
     PORT: int = 5000
     HOST: str = "127.0.0.1"
 
