@@ -20,7 +20,7 @@ Access control is enforced on the server for every request. An unauthorized user
 ## 2. Technology Stack
 
 - **Backend:** Python 3.11, FastAPI 0.103.2, Uvicorn 0.23.2, SQLAlchemy 2.0.30, Passlib (bcrypt 1.7.4), Python-Jose (JWT cryptographic signing), Pydantic, python-magic.
-- **Database:** SQLite (persisted in `backend/trustvault.db` with live demo data, GUID types, and cryptographic parent hash chains).
+- **Database:** PostgreSQL (hosted on Render for the live application), with SQLAlchemy ORM, UUID-based identifiers, and cryptographic hash chains for audit events.
 - **Frontend:** Next.js 16 (App Router), React 19, TypeScript, TailwindCSS with Emerald-Green (#10B981 / #059669) & Black UI palette.
 - **Unified Shell:** Standalone integrated responsive web interface served directly on port 5000 by `run.py`.
 
