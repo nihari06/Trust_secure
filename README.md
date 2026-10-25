@@ -68,7 +68,7 @@ npm run dev
 
 ## 4. Database Configuration & Environment Variables
 
-The database is pre-configured and stored in `backend/trustvault.db`. Configuration is controlled via `backend/.env` or system environment variables:
+The live application uses PostgreSQL hosted on Render. For local development, SQLite can be used with the database file backend/trustvault.db. Database configuration is controlled through backend/.env or system environment variables.
 
 | Variable | Default Value | Description |
 |---|---|---|
