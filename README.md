@@ -34,7 +34,7 @@ The application can be started using the standard Windows PowerShell commands:
 cd "PROJECT_PATH"
 .\.venv\Scripts\Activate.ps1
 python -m pip install -r requirements.txt
-python run.py
+python -m uvicorn app.main:app --reload --port 5000
 ```
 
 The application is then immediately accessible in your browser at:
